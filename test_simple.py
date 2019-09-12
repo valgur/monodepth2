@@ -16,11 +16,9 @@ import matplotlib.cm as cm
 
 import torch
 import torch.nn.functional
-from torchvision import transforms
 
-from monodepth2 import networks
-from monodepth2.layers import disp_to_depth
-from monodepth2.utils import download_model_if_doesnt_exist, model_names
+from monodepth2 import Monodepth2
+from monodepth2.utils import model_names
 
 
 def parse_args():
@@ -52,34 +50,8 @@ def test_simple(args):
     else:
         device = torch.device("cpu")
 
-    download_model_if_doesnt_exist(args.model_name)
-    model_path = os.path.join("models", args.model_name)
-    print("-> Loading model from ", model_path)
-    encoder_path = os.path.join(model_path, "encoder.pth")
-    depth_decoder_path = os.path.join(model_path, "depth.pth")
-
-    # LOADING PRETRAINED MODEL
-    print("   Loading pretrained encoder")
-    encoder = networks.ResnetEncoder(18, False)
-    loaded_dict_enc = torch.load(encoder_path, map_location=device)
-
-    # extract the height and width of image that this model was trained with
-    feed_height = loaded_dict_enc['height']
-    feed_width = loaded_dict_enc['width']
-    filtered_dict_enc = {k: v for k, v in loaded_dict_enc.items() if k in encoder.state_dict()}
-    encoder.load_state_dict(filtered_dict_enc)
-    encoder.to(device)
-    encoder.eval()
-
-    print("   Loading pretrained decoder")
-    depth_decoder = networks.DepthDecoder(
-        num_ch_enc=encoder.num_ch_enc, scales=range(4))
-
-    loaded_dict = torch.load(depth_decoder_path, map_location=device)
-    depth_decoder.load_state_dict(loaded_dict)
-
-    depth_decoder.to(device)
-    depth_decoder.eval()
+    model = Monodepth2(args.model_name, "models", device=device)
+    model.load()
 
     # FINDING INPUT IMAGES
     if os.path.isfile(args.image_path):
@@ -105,24 +77,19 @@ def test_simple(args):
 
             # Load image and preprocess
             input_image = pil.open(image_path).convert('RGB')
-            original_width, original_height = input_image.size
-            input_image = input_image.resize((feed_width, feed_height), pil.LANCZOS)
-            input_image = transforms.ToTensor()(input_image).unsqueeze(0)
+            original_shape = input_image.size[::-1]
+            input_image = input_image.resize(model.feed_shape[::-1], pil.LANCZOS)
+            input_image = model.input_image_to_tensor(input_image)
 
             # PREDICTION
-            input_image = input_image.to(device)
-            features = encoder(input_image)
-            outputs = depth_decoder(features)
-
-            disp = outputs[("disp", 0)]
-            disp_resized = torch.nn.functional.interpolate(
-                disp, (original_height, original_width), mode="bilinear", align_corners=False)
+            disp, depth = model.predict(input_image)
 
             # Saving numpy file
             output_name = os.path.splitext(os.path.basename(image_path))[0]
             name_dest_npy = os.path.join(output_directory, "{}_disp.npy".format(output_name))
-            scaled_disp, _ = disp_to_depth(disp, 0.1, 100)
-            np.save(name_dest_npy, scaled_disp.cpu().numpy())
+            np.save(name_dest_npy, disp.cpu().numpy())
+
+            disp_resized = model.resize_output(disp, original_shape)
 
             # Saving colormapped depth image
             disp_resized_np = disp_resized.squeeze().cpu().numpy()
