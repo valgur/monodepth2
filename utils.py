@@ -5,10 +5,12 @@
 # available in the LICENSE file.
 
 from __future__ import absolute_import, division, print_function
-import os
+
 import hashlib
+import os
 import zipfile
-from six.moves import urllib
+
+from torch.hub import download_url_to_file
 
 
 def readlines(filename):
@@ -48,45 +50,57 @@ def sec_to_hm_str(t):
     return "{:02d}h{:02d}m{:02d}s".format(h, m, s)
 
 
-def download_model_if_doesnt_exist(model_name):
-    """If pretrained kitti model doesn't exist, download and unzip it
-    """
-    # values are tuples of (<google cloud URL>, <md5 checksum>)
-    download_paths = {
-        "mono_640x192":
-            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_640x192.zip",
-             "a964b8356e08a02d009609d9e3928f7c"),
-        "stereo_640x192":
-            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_640x192.zip",
-             "3dfb76bcff0786e4ec07ac00f658dd07"),
-        "mono+stereo_640x192":
-            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_640x192.zip",
-             "c024d69012485ed05d7eaa9617a96b81"),
-        "mono_no_pt_640x192":
-            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_no_pt_640x192.zip",
-             "9c2f071e35027c895a4728358ffc913a"),
-        "stereo_no_pt_640x192":
-            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_no_pt_640x192.zip",
-             "41ec2de112905f85541ac33a854742d1"),
-        "mono+stereo_no_pt_640x192":
-            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_no_pt_640x192.zip",
-             "46c3b824f541d143a45c37df65fbab0a"),
-        "mono_1024x320":
-            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_1024x320.zip",
-             "0ab0766efdfeea89a0d9ea8ba90e1e63"),
-        "stereo_1024x320":
-            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_1024x320.zip",
-             "afc2f2126d70cf3fdf26b550898b501a"),
-        "mono+stereo_1024x320":
-            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_1024x320.zip",
-             "cdc5fc9b23513c07d5b19235d9ef08f7"),
-        }
+# values are tuples of (<google cloud URL>, <md5 checksum>)
+pretrained_models = {
+    "mono_640x192":
+        ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_640x192.zip",
+         "a964b8356e08a02d009609d9e3928f7c"),
+    "stereo_640x192":
+        ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_640x192.zip",
+         "3dfb76bcff0786e4ec07ac00f658dd07"),
+    "mono+stereo_640x192":
+        ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_640x192.zip",
+         "c024d69012485ed05d7eaa9617a96b81"),
+    "mono_no_pt_640x192":
+        ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_no_pt_640x192.zip",
+         "9c2f071e35027c895a4728358ffc913a"),
+    "stereo_no_pt_640x192":
+        ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_no_pt_640x192.zip",
+         "41ec2de112905f85541ac33a854742d1"),
+    "mono+stereo_no_pt_640x192":
+        ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_no_pt_640x192.zip",
+         "46c3b824f541d143a45c37df65fbab0a"),
+    "mono_1024x320":
+        ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_1024x320.zip",
+         "0ab0766efdfeea89a0d9ea8ba90e1e63"),
+    "stereo_1024x320":
+        ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_1024x320.zip",
+         "afc2f2126d70cf3fdf26b550898b501a"),
+    "mono+stereo_1024x320":
+        ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_1024x320.zip",
+         "cdc5fc9b23513c07d5b19235d9ef08f7"),
+}
 
-    if not os.path.exists("models"):
-        os.makedirs("models")
+_state_files = ("depth.pth", "encoder.pth", "pose.pth", "pose_encoder.pth")
 
-    model_path = os.path.join("models", model_name)
 
+def torch_model_dir():
+    from torch.hub import _get_torch_home
+    torch_home = _get_torch_home()
+    return os.path.join(torch_home, 'checkpoints')
+
+
+def get_state_file(model_name, state_file):
+    if model_name not in pretrained_models:
+        raise ValueError("Unexpected model name requested: {}. "
+                         "Must be one of {}".format(model_name, list(pretrained_models)))
+    if state_file not in _state_files:
+        raise ValueError("Unexpected state file requested: {}".format(state_file))
+
+    return os.path.join(torch_model_dir(), "-".join(["monodepth2", model_name, state_file]))
+
+
+def download_model(model_name):
     def check_file_matches_md5(checksum, fpath):
         if not os.path.exists(fpath):
             return False
@@ -94,21 +108,21 @@ def download_model_if_doesnt_exist(model_name):
             current_md5checksum = hashlib.md5(f.read()).hexdigest()
         return current_md5checksum == checksum
 
-    # see if we have the model already downloaded...
-    if not os.path.exists(os.path.join(model_path, "encoder.pth")):
-
-        model_url, required_md5checksum = download_paths[model_name]
-
-        if not check_file_matches_md5(required_md5checksum, model_path + ".zip"):
-            print("-> Downloading pretrained model to {}".format(model_path + ".zip"))
-            urllib.request.urlretrieve(model_url, model_path + ".zip")
-
-        if not check_file_matches_md5(required_md5checksum, model_path + ".zip"):
-            print("   Failed to download a file which matches the checksum - quitting")
-            quit()
-
-        print("   Unzipping model...")
-        with zipfile.ZipFile(model_path + ".zip", 'r') as f:
-            f.extractall(model_path)
-
-        print("   Model unzipped to {}".format(model_path))
+    model_url, required_md5checksum = pretrained_models[model_name]
+    zip_path = "/tmp/monodepth2-{}.zip".format(model_name)
+    print("-> Downloading pretrained model {}".format(model_name))
+    try:
+        download_url_to_file(model_url, zip_path)
+        if not check_file_matches_md5(required_md5checksum, zip_path):
+            raise RuntimeError("Failed to download a file which matches the checksum - quitting")
+        model_dir = torch_model_dir()
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            for state_file in _state_files:
+                path = get_state_file(model_name, state_file)
+                with open(path, 'wb') as f:
+                    f.write(zf.read(state_file))
+    finally:
+        if os.path.exists(zip_path):
+            os.unlink(zip_path)
