@@ -9,6 +9,7 @@ from __future__ import absolute_import, division, print_function
 import hashlib
 import os
 import zipfile
+from tempfile import NamedTemporaryFile
 
 from torch.hub import download_url_to_file
 
@@ -109,7 +110,7 @@ def download_model(model_name):
         return current_md5checksum == checksum
 
     model_url, required_md5checksum = pretrained_models[model_name]
-    zip_path = "/tmp/monodepth2-{}.zip".format(model_name)
+    zip_path = NamedTemporaryFile(suffix="monodepth2-{}.zip".format(model_name)).name
     print("-> Downloading pretrained model {}".format(model_name))
     try:
         download_url_to_file(model_url, zip_path)
